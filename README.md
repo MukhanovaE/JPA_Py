@@ -1,8 +1,9 @@
-# JPA_Py
+# resonator_tools
 
 This package is based on repositories: 
 
 https://github.com/sebastianprobst/resonator_tools
+
 https://github.com/vdrhtc/resonator_tools
 
 In this modification a tail-port resonator fitting is added based on: 
