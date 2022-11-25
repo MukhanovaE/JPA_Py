@@ -1,5 +1,6 @@
 import warnings
 import numpy as np
+import matplotlib.pyplot as plt
 import scipy.optimize as spopt
 from numpy import ndarray
 from scipy.constants import hbar
@@ -223,10 +224,10 @@ class reflection_port(circlefit, save_load, plotting, calibration):
             warnings.warn('Please perform the fit first', UserWarning)
             return None
 
-
 class notch_port(circlefit, save_load, plotting, calibration):
     '''
-    notch type port probed in transmission
+    notch type port probed in transmission as basic class and
+    the modification for tail-type resonator probed in reflection based on: https://arxiv.org/abs/2203.09247v1
     '''
 
     def __init__(self, f_data=None, z_data_raw=None):
@@ -442,6 +443,205 @@ class notch_port(circlefit, save_load, plotting, calibration):
             warnings.warn('Please perform the fit first', UserWarning)
             return None
 
+    def tail_port(self, f_data, z_data, plot=False, refine_results=False):
+        '''
+        The modification is based on the affine frequency transformation with respect to the resonant frequency.
+        If we compare the formulas for notch-port and tail-port:
+        Notch port: a * np.exp(np.complex(0, alpha)) * np.exp(-2j * np.pi * f * delay) * (
+                    1. - Ql / Qc * np.exp(1j * phi) / (1. + 2j * Ql * (f - fr) / fr))
+        Tail-port: a * np.exp(np.complex(0, alpha)) * np.exp(-2j * np.pi * f * delay) * (
+                    1. - Ql / Qc * np.exp(1j * phi) / (1. - 2j * Ql * (f - fr) / fr))
+        So the only difference is in the sing in the denominator,hence the transformation f_new = -f_raw + 2 * fr will
+            bring us to notch-port resonator. Finally a back transformation is made.
+
+        :param f_data: full numpy array of frequencies in Hz
+        :param z_data: complex S-parameter numpy array
+        '''
+
+        def freq_transform (freqs, S_data):
+            '''
+            :param freqs: full numpy array of frequencies in Hz
+            :param S_data: complex S-parameter numpy array
+            :return: numpy array of reformed to notch-port frequencies in Hz, complex S-parameter numpy array, base reflection frequency (fr_guess) in Hz
+            '''
+            num_res = np.argmax(np.angle(S_data)) # the number of the array element that corresponds to the extremum of the phase function (assumed resonance)
+            fr_guess = freqs[num_res]             # the guess resonant frequency (used for reverse conversion)
+            freqs = -freqs + 2 * fr_guess         # affine frequency transformation
+            return freqs, S_data, fr_guess
+
+        def back_freq_transform (freqs, fr_guess):
+            '''
+            :param freqs: full numpy array of frequencies in Hz
+            :param fr_guess: the guess resonant frequency
+            :return: numpy array of reformed back to tail-port basis frequencies in Hz
+            '''
+            f_data = -freqs + 2 * fr_guess
+            return f_data
+
+
+        f_data, S_data, fr_guess = freq_transform(f_data, z_data)  # transformed data now can be used for standard notch-port fitting.
+
+        # For some reason, the automatic fit does not work on its own, so the first step is copied to this function without changes from _fit_circle.
+        # If it works - don't touch it.  ¯\_ (ツ)_/¯
+
+
+        def calc_moments (z_data):
+            xi = z_data.real
+            xi_sqr = xi * xi
+            yi = z_data.imag
+            yi_sqr = yi * yi
+            zi = xi_sqr + yi_sqr
+            Nd = float(len(xi))
+            xi_sum = xi.sum()
+            yi_sum = yi.sum()
+            zi_sum = zi.sum()
+            xiyi_sum = (xi * yi).sum()
+            xizi_sum = (xi * zi).sum()
+            yizi_sum = (yi * zi).sum()
+            return np.array([[(zi * zi).sum(), xizi_sum, yizi_sum, zi_sum], \
+                             [xizi_sum, xi_sqr.sum(), xiyi_sum, xi_sum], \
+                             [yizi_sum, xiyi_sum, yi_sqr.sum(), yi_sum], \
+                             [zi_sum, xi_sum, yi_sum, Nd]])
+
+        M = calc_moments(z_data)
+
+        a0 = ((M[2][0] * M[3][2] - M[2][2] * M[3][0]) * M[1][1] - M[1][2] * M[2][0] * M[3][1] - M[1][0] * M[2][1] *
+              M[3][2] + M[1][0] * M[2][2] * M[3][1] + M[1][2] * M[2][1] * M[3][0]) * M[0][3] + (
+                     M[0][2] * M[2][3] * M[3][0] - M[0][2] * M[2][0] * M[3][3] + M[0][0] * M[2][2] * M[3][3] - M[0][
+                 0] * M[2][3] * M[3][2]) * M[1][1] + (
+                     M[0][1] * M[1][3] * M[3][0] - M[0][1] * M[1][0] * M[3][3] - M[0][0] * M[1][3] * M[3][1]) * \
+             M[2][2] + (-M[0][1] * M[1][2] * M[2][3] - M[0][2] * M[1][3] * M[2][1]) * M[3][0] + (
+                     (M[2][3] * M[3][1] - M[2][1] * M[3][3]) * M[1][2] + M[2][1] * M[3][2] * M[1][3]) * M[0][0] + (
+                     M[1][0] * M[2][3] * M[3][2] + M[2][0] * (M[1][2] * M[3][3] - M[1][3] * M[3][2])) * M[0][1] + (
+                     (M[2][1] * M[3][3] - M[2][3] * M[3][1]) * M[1][0] + M[1][3] * M[2][0] * M[3][1]) * M[0][2]
+        a1 = (((M[3][0] - 2. * M[2][2]) * M[1][1] - M[1][0] * M[3][1] + M[2][2] * M[3][0] + 2. * M[1][2] * M[2][1] -
+               M[2][0] * M[3][2]) * M[0][3] + (
+                      2. * M[2][0] * M[3][2] - M[0][0] * M[3][3] - 2. * M[2][2] * M[3][0] + 2. * M[0][2] * M[2][
+                  3]) * M[1][1] + (-M[0][0] * M[3][3] + 2. * M[0][1] * M[1][3] + 2. * M[1][0] * M[3][1]) * M[2][
+                  2] + (-M[0][1] * M[1][3] + 2. * M[1][2] * M[2][1] - M[0][2] * M[2][3]) * M[3][0] + (
+                      M[1][3] * M[3][1] + M[2][3] * M[3][2]) * M[0][0] + (
+                      M[1][0] * M[3][3] - 2. * M[1][2] * M[2][3]) * M[0][1] + (
+                      M[2][0] * M[3][3] - 2. * M[1][3] * M[2][1]) * M[0][2] - 2. * M[1][2] * M[2][0] * M[3][
+                  1] - 2. * M[1][0] * M[2][1] * M[3][2])
+        a2 = ((2. * M[1][1] - M[3][0] + 2. * M[2][2]) * M[0][3] + (2. * M[3][0] - 4. * M[2][2]) * M[1][1] - 2. *
+              M[2][
+                  0] * M[3][2] + 2. * M[2][2] * M[3][0] + M[0][0] * M[3][3] + 4. * M[1][2] * M[2][1] - 2. * M[0][
+                  1] * M[1][
+                  3] - 2. * M[1][0] * M[3][1] - 2. * M[0][2] * M[2][3])
+        a3 = (-2. * M[3][0] + 4. * M[1][1] + 4. * M[2][2] - 2. * M[0][3])
+        a4 = -4.
+
+        def func (x):
+            return a0 + a1 * x + a2 * x * x + a3 * x * x * x + a4 * x * x * x * x
+
+        def d_func (x):
+            return a1 + 2 * a2 * x + 3 * a3 * x * x + 4 * a4 * x * x * x
+
+        x0 = spopt.fsolve(func, 0., fprime=d_func)
+
+        def solve_eq_sys (val, M):
+            # prepare
+            M[3][0] = M[3][0] + 2 * val
+            M[0][3] = M[0][3] + 2 * val
+            M[1][1] = M[1][1] - val
+            M[2][2] = M[2][2] - val
+            return np.linalg.svd(M)
+
+        U, s, Vt = solve_eq_sys(x0[0], M)
+
+        A_vec = Vt[np.argmin(s), :]
+
+        xc = -A_vec[1] / (2. * A_vec[0])
+        yc = -A_vec[2] / (2. * A_vec[0])
+        # the term *sqrt term corrects for the constraint, because it may be altered due to numerical inaccuracies during calculation
+        r0 = 1. / (2. * np.absolute(A_vec[0])) * np.sqrt(
+            A_vec[1] * A_vec[1] + A_vec[2] * A_vec[2] - 4. * A_vec[0] * A_vec[3])
+        if refine_results:
+            print("agebraic r0: " + str(r0))
+            xc, yc, r0 = self._fit_circle_iter(z_data, xc, yc, r0)
+            r0 = self._fit_circle_iter_radialweight(z_data, xc, yc, r0)
+            print("iterative r0: " + str(r0))
+
+        S_data = np.real(S_data) - xc + 1j * (np.imag(S_data) + yc)
+
+        # The function was copied to this place, then again my code
+        # Next, a filtering algorithm is implemented that removes point outliers.
+
+        factor = 0.2 # You can vary this factor to discard more noise, although I would recommend using it only for oint outliers. Base 0.2
+        S_data_filtered = S_data[0:3]
+        f_data_filtered = f_data[0:3]
+        for i in range(3, len(f_data) - 3):
+            r1 = np.abs(np.real(S_data[i - 3: i - 1]))
+            r2 = np.abs(np.imag(S_data[i - 3: i - 1]))
+
+            avg_re = np.mean(r1)
+            avg_im = np.mean(r2)
+            if (np.abs(np.abs(np.real(S_data[i])) - avg_re) < factor) or (
+                    np.abs(np.abs(np.imag(S_data[i])) - avg_im) < factor):
+                S_data_filtered = np.append(S_data_filtered, S_data[i])
+                f_data_filtered = np.append(f_data_filtered, f_data[i])
+        S_data_filtered = np.append(S_data_filtered, S_data[len(f_data) - 3:])
+        f_data_filtered = np.append(f_data_filtered, f_data[len(f_data) - 3:])
+
+
+        port1 = notch_port(f_data_filtered, S_data_filtered) # Finally notch-port fitting, f_data_filtered in Hz
+        port1.autofit()
+        # port1.plotall()
+
+        fitresults = port1.fitresults
+        f_tail = back_freq_transform(f_data_filtered, fr_guess)
+
+
+        def S11_tail (f, fr=6e9, Ql=900, Qc=1000., phi=0., a=1., alpha=0., delay=.0):
+            '''
+            full model for tail type resonances
+            '''
+            return a * np.exp(np.complex(0, alpha)) * np.exp(-2j * np.pi * f * delay) * (
+                    1. - Ql / Qc * np.exp(1j * phi) / (1. - 2j * Ql * (f - fr) / fr))
+
+        S_fit = S11_tail(f_tail,
+                          fr=back_freq_transform(fitresults["fr"], fr_guess),
+                          Ql=fitresults["Ql"],
+                          Qc=fitresults["absQc"],
+                          phi=fitresults["phi0"],
+                          a=fitresults["a"], alpha=fitresults["alpha"],
+                          delay=fitresults["delay"])
+
+        def plotall (f, S, S_fit):
+            real = S.real
+            imag = S.imag
+            real2 = S_fit.real
+            imag2 = S_fit.imag
+            fig = plt.figure(figsize=(15, 5))
+            plt.suptitle('Tail-port resonator fit')
+            fig.canvas.set_window_title("Resonator fit")
+            plt.subplot(131)
+            plt.plot(real, imag, label='rawdata')
+            plt.plot(real2, imag2, label='fit')
+            plt.xlabel('Re(S21)')
+            plt.ylabel('Im(S21)')
+            plt.legend()
+            plt.subplot(132)
+            plt.plot(f * 1e-9, np.absolute(S), label='rawdata')
+            plt.plot(f * 1e-9, np.absolute(S_fit), label='fit')
+            plt.xlabel('f (GHz)')
+            plt.ylabel('Amplitude')
+            plt.legend()
+            plt.subplot(133)
+            plt.plot(f * 1e-9, np.unwrap(np.angle(S)), label='rawdata')
+            plt.plot(f * 1e-9, np.unwrap(np.angle(S_fit)), label='fit')
+            plt.xlabel('f (GHz)')
+            plt.ylabel('Phase')
+            plt.legend()
+            # plt.gcf().set_size_inches(15,5)
+            plt.tight_layout()
+            plt.show()
+
+        if plot: plotall(f_tail, S_data_filtered, S_fit)
+
+        return f_tail, S_fit, fitresults
+
+
 
 class transmission_port(circlefit, save_load, plotting):
     '''
@@ -470,7 +670,6 @@ class transmission_port(circlefit, save_load, plotting):
         errors = np.sqrt(np.diag(pcov))
         self.fitresults = {'fr': popt[0], 'fr_err': errors[0], 'Ql': popt[1], 'Ql_err': errors[1],
                            'Ampsqr': popt[2], 'Ampsqr_err': errors[2]}
-
 
 class resonator(object):
     '''
@@ -543,7 +742,6 @@ class resonator(object):
         self.port.update({key: transm()})
         pass
 
-
 class batch_processing(object):
     '''
     A class for batch processing of resonator data as a function of another variable
@@ -565,7 +763,6 @@ class batch_processing(object):
         of the amplitude and phase, default = 0 (first)
         '''
         pass
-
 
 class coupled_resonators(batch_processing):
     '''
